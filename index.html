@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"><title>余日 · 股票生存 Roguelike</title><style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;background:#080e15;color:#edf2f5;font-family:'Microsoft YaHei',sans-serif}body{display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 25% 25%,#20332f 0%,#111b26 35%,#080e15 75%)}.shell{display:flex;gap:64px;align-items:center;padding:28px}.intro{width:260px}.eyebrow{color:#91dac4;font-size:12px;letter-spacing:3px}.intro h1{font-size:64px;font-weight:500;letter-spacing:12px;margin:22px 0}.intro p{font-size:14px;line-height:1.9;color:#9dabb9}.intro .caption{margin-top:35px;font-size:11px;color:#627487;line-height:2}.device{width:min(440px,calc((100dvh - 50px)*.535));height:calc(100dvh - 50px);max-height:940px;min-height:600px;border:1px solid #34434d;border-radius:24px;overflow:hidden;box-shadow:0 30px 100px #0008;background:#0c141d}canvas{display:block;width:100%;height:100%;touch-action:none}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}@media(max-width:900px){.intro{display:none}.shell{padding:16px}.device{width:min(440px,calc(100vw - 32px))}}@media(max-width:500px){body{display:block;background:#0c141d}.shell{display:block;padding:0}.device{width:100vw;height:100dvh;min-height:0;max-height:none;border:0;border-radius:0;box-shadow:none}}
+</style></head><body><main class="shell"><aside class="intro"><div class="eyebrow">STOCK SURVIVAL / 01</div><h1>余日</h1><p>有限的信息，无限的选择。<br>在市场与生活之间，<br>为明天留一点余地。</p><p class="caption">六支股票 · 二十四张卡牌<br>一日一次结算 · 自动保存进度<br>网页试玩 Demo / v0.1</p></aside><div class="device"><canvas id="game" aria-label="余日股票生存游戏，点击股票或手牌操作，详情可上下滑动"></canvas></div></main><div id="status" class="sr-only" aria-live="polite"></div><script>
+(function(){const modules={"src/ui/app.js":function(require,module,exports){
+const {createGame,dispatch,getPlayerView}=require('../core/engine');const {serialize,restore}=require('../core/save');const {layout,hitTest}=require('./layout');const {C,text,box,line,wrap,spark,money,pct}=require('./draw');const {drawMarket}=require('./screens');const {CARDS}=require('../config/cards');const {STOCKS}=require('../config/stocks');
+function createApp(platform){return new GameApp(platform);}
+class GameApp{
+ constructor(platform){this.platform=platform;this.ctx=platform.canvas.getContext('2d');this.state=createGame(Date.now());this.tab='market';this.modal=null;this.scroll=0;this.maxScroll=0;this.targets=[];this.newsIndex=0;this.toast=null;this.best={days:0,peak:0};this.timer=null;const records=platform.records.read();try{this.best=JSON.parse(records.value)||this.best;}catch(e){}
+  const saved=platform.storage.read();if(saved.ok&&saved.value){const r=restore(saved.value);this.saved=r.ok?r.state:null;this.open({type:r.ok?'resume':'broken'});}else this.open({type:'welcome',readError:!saved.ok});
+  platform.onPointer(e=>this.pointer(e));platform.onResize(()=>this.draw());this.draw();
+ }
+ open(m){if(m.type==='restart'&&!m.returnTo)m.returnTo=this.modal;this.modal=m;this.scroll=0;this.maxScroll=0;this.draw();}
+ notify(t){this.toast={message:t,until:Date.now()+3500};this.platform.announce(t);clearTimeout(this.timer);this.timer=setTimeout(()=>{this.toast=null;this.draw();},3500);this.draw();}
+ persist(){const result=this.platform.storage.write(serialize(this.state));if(!result.ok){this.toast={message:result.message,until:Date.now()+60000};this.platform.announce(result.message);}if(this.state.phase==='bankrupt'){this.best.days=Math.max(this.best.days||0,this.state.day-1);this.best.peak=Math.max(this.best.peak||0,this.state.stats.peak);this.platform.records.write(JSON.stringify(this.best));}}
+ act(action){const r=dispatch(this.state,action);if(!r.ok){this.notify(r.message);return;}this.state=r.state;this.persist();if(action.type==='close')this.modal={type:'report'};else if(action.type==='continue'){this.modal=null;this.newsIndex++;}else this.modal=null;this.scroll=0;this.maxScroll=0;this.platform.announce(r.message);if(action.type==='card')this.notify(r.message);else if(action.type==='buy'&&this.state.day===1)this.notify('买入完成。股价在收盘时变化；请留出支付生活费的现金。');else this.draw();}
+ start(){this.state=createGame(Date.now());this.modal=null;this.tab='market';this.scroll=0;this.persist();this.draw();}
+ target(t){if(this.clip){const top=Math.max(t.y,this.clip.top),bottom=Math.min(t.y+t.h,this.clip.bottom);if(bottom<=top)return;t={...t,y:top,h:bottom-top};}this.targets.push({...t,layer:t.layer||0});}
+ button(label,x,y,w,h,fn,primary=false,layer=0,quiet=false){box(this.ctx,x,y,w,h,primary?C.mint:quiet?C.bg:C.panel2,9);text(this.ctx,label,x+w/2,y+(h-14)/2,13,primary?C.bg:quiet?C.muted:C.text,true,'center');this.target({x,y,w,h,fn,label,layer});}
+ pointer(e){const l=this.l;if(!l)return;if(e.type==='wheel'){if(this.modal){this.scroll=Math.max(0,Math.min(this.maxScroll,this.scroll+e.deltaY*l.scale));this.draw();}return;}const x=e.x*l.scale,y=(e.y-l.safeTop)*l.scale;
+  if(e.type==='down'){this.drag={x,y,originY:y,scroll:this.scroll,moved:false};return;}
+  if(e.type==='cancel'){this.drag=null;return;}
+  if(e.type==='move'&&this.drag){if(Math.abs(y-this.drag.originY)>7){this.drag.moved=true;if(this.modal){this.scroll=Math.max(0,Math.min(this.maxScroll,this.drag.scroll+this.drag.originY-y));this.draw();}}return;}
+  if(e.type==='up'&&this.drag){const d=this.drag;this.drag=null;if(d.moved)return;const t=hitTest(this.targets,x,y,this.modal?1:0);if(t&&Math.abs(d.x-x)<12&&Math.abs(d.y-y)<12)t.fn();}
+ }
+ draw(){const m=this.platform.getMetrics();if(!m.width||!m.height)return;this.l=layout(m);const l=this.l,c=this.ctx,dpr=m.dpr||1;this.platform.canvas.width=Math.round(m.width*dpr);this.platform.canvas.height=Math.round(m.height*dpr);c.setTransform(dpr/l.scale,0,0,dpr/l.scale,0,m.safeTop*dpr);c.fillStyle=C.bg;c.fillRect(0,-(m.safeTop||0)*l.scale,l.width,l.height+(m.safeTop||0)*l.scale+(m.safeBottom||0)*l.scale);this.targets=[];this.clip=null;const v=getPlayerView(this.state);drawMarket(this,v,l);if(this.modal)this.drawModal(v);if(this.toast&&Date.now()<this.toast.until){const y=this.modal?this.l.height-75:this.l.cards.y-70;box(c,18,y,384,57,'#294637');wrap(c,this.toast.message,30,y+10,359,12,C.text,18);}if(this.platform.describe)this.platform.describe(v,this.modal,this.targets);}
+ drawModal(v){const c=this.ctx,l=this.l,b=l.modal;c.fillStyle='rgba(4,8,13,.82)';c.fillRect(0,0,420,l.height);box(c,b.x,b.y,b.w,b.h,C.panel,16);const m=this.modal,stock=v.stocks.find(s=>s.id===m.id);const titles={stock:stock?.name,trade:'交易确认',cardConfirm:'卡牌确认',card:'使用卡牌',close:'收盘前确认',report:v.phase==='bankrupt'?'本局结束':'今日结算',welcome:'欢迎来到余日',resume:'继续上次游戏',broken:'存档恢复',news:'市场新闻',information:'情报与事件',assets:'现金流明细',rules:'游戏规则',restart:'重新开局'};text(c,titles[m.type]||'详情',28,b.y+20,22,C.text,true);
+ if(!['welcome','resume','broken','restart'].includes(m.type))this.button('×',366,b.y+12,28,32,()=>{this.modal=null;this.draw();},false,1);
+ const top=b.y+67,bottom=b.y+b.h-20;this.clip={top,bottom};c.save();c.beginPath();c.rect(22,top,376,bottom-top);c.clip();let y=top-this.scroll;
+ const para=(t,color=C.muted,size=13)=>{y=wrap(c,t,28,y,363,size,color,21)+10;};const heading=t=>{text(c,t,28,y,14,C.text,true);y+=28;};const row=(label,val,color=C.text)=>{text(c,label,28,y,12,C.muted);text(c,val,390,y,14,color,true,'right');y+=30;};const btn=(label,fn,primary=false)=>{this.button(label,28,y,364,42,fn,primary,1);y+=52;};const separator=()=>{line(c,28,y,364);y+=17;};
+ if(m.type==='stock'){
+  text(c,(stock.price/100).toFixed(2),28,y,35,C.text,true);text(c,pct(stock.lastReturn),390,y+11,17,stock.lastReturn>=0?C.mint:C.red,true,'right');y+=49;para(`${stock.sector} · ${stock.role}资产 · 上日涨跌`);const chart=stock.history.slice(-10);spark(c,chart,31,y+4,357,83,stock.color);chart.forEach((n,i)=>this.target({x:31+i*357/Math.max(1,chart.length-1)-12,y:y+4,w:24,h:83,layer:1,label:'查看 DAY '+n.day,fn:()=>this.open({type:'history',id:stock.id,node:n})}));y+=106;
+  const history=stock.history.slice(-3);history.forEach(n=>{const ty=y;para(`DAY ${n.day>0?n.day:'—'}  ¥${(n.price/100).toFixed(2)} · ${n.note} →`,C.muted,11);this.target({x:28,y:ty,w:364,h:y-ty,layer:1,label:'查看 DAY '+n.day,fn:()=>this.open({type:'history',id:stock.id,node:n})});});
+  if(stock.event)para(`${stock.event.name} · ${stock.event.days===0?'今日公布':stock.event.days+' 日后公布'}`,C.gold);
+  row('持仓市值','¥'+money(stock.value));row('平均成本',stock.qty?'¥'+(stock.cost/stock.qty/100).toFixed(2):'—');row('浮盈亏',money(stock.value-stock.cost,true),stock.value>=stock.cost?C.mint:C.red);if(stock.short)row('空头保证金','¥'+money(stock.short));if(stock.financed)para('融资标记：不能叠加收益放大卡',C.gold);if(stock.effect.locked)para('满仓锁定至收盘；保护合约仍可触发。',C.gold);
+  heading('按可用现金买入');[.25,.5,.75,1].forEach((f,i)=>this.button(Math.round(f*100)+'%',28+i*93,y,85,37,()=>this.open({type:'trade',id:stock.id,side:'buy',fraction:f}),false,1));y+=52;
+  heading('按持仓卖出');[.25,.5,1].forEach((f,i)=>this.button(Math.round(f*100)+'%',28+i*124,y,116,37,()=>this.open({type:'trade',id:stock.id,side:'sell',fraction:f}),false,1));y+=55;
+  heading('公开新闻');v.news.filter(n=>n.stockId===stock.id).forEach(n=>para(n.source+' · '+n.text));heading('已调查情报');if(!stock.info.length)para('尚未调查。使用信息卡可以揭示隐藏线索。');stock.info.forEach(k=>para((k.expired?'[已过期] ':'')+k.text,k.expired?C.muted:C.text));
+  const effectNames=[stock.effect.amplify,stock.effect.protect].filter(Boolean).map(id=>CARDS.find(c=>c.id===id)?.name);if(effectNames.length)para('本日效果：'+effectNames.join(' / '),C.mint);
+ }else if(m.type==='history'){
+  heading(stock.name+' · '+(m.node.day>0?'DAY '+m.node.day:'上市基准'));row('结算价格','¥'+(m.node.price/100).toFixed(2));para(m.node.note,C.text,16);const report=v.reports.find(r=>r.day===m.node.day);const rowData=report?.stocks.find(r=>r.id===stock.id);if(rowData?.factors){heading('价格驱动');for(const [key,label] of [['trend','基础趋势'],['event','事件影响'],['sentiment','情绪修正'],['valuation','估值回归'],['noise','微小扰动']])row(label,pct(rowData.factors[key]));}else para('较早历史保留价格与事件摘要，详细结算可在最近三日复盘中查看。');btn('返回个股',()=>this.open({type:'stock',id:stock.id}));
+ }else if(m.type==='trade'){
+  const s=v.stocks.find(x=>x.id===m.id),amount=m.side==='buy'?Math.floor(v.cash*m.fraction):Math.round(s.value*m.fraction),cash=m.side==='buy'?v.cash-amount:v.cash+amount;
+  heading((m.side==='buy'?'买入':'卖出')+' '+s.name);row('交易比例',Math.round(m.fraction*100)+'%');row('预计交易金额','¥'+money(amount));row('交易后现金','¥'+money(cash),C.mint);row('今日生活费及到期账单','¥'+money(v.future[0].life+v.future[0].delayed));row('现有债务预计利息','¥'+money(Math.round(v.debt*.01)));para('股价在本日收盘时才变化。这里显示的资金预览不包含未公布的事件或未来收益。');btn('确认'+(m.side==='buy'?'买入':'卖出'),()=>this.act({type:m.side,stockId:s.id,fraction:m.fraction}),true);btn('返回个股',()=>this.open({type:'stock',id:s.id}));
+ }else if(m.type==='card'){
+  const card=CARDS.find(c=>c.id===m.cardId);heading(card.name+(card.rare?' · 稀有':''));para(card.description,C.text,16);para(`消耗 1 次行动 · 今日剩余 ${v.actionsLeft} 次`,C.gold);if(['stop','profit'].includes(card.id))para('这是游戏保护合约，按当日仓位收益封底或封顶结算，不模拟盘中成交。');if(card.target){heading('选择目标股票');for(const s of v.stocks){btn(s.name+' · '+s.role,()=>this.open({type:'cardConfirm',cardId:card.id,id:s.id}));}}else btn('确认使用',()=>this.act({type:'card',cardId:card.id}),true);
+ }else if(m.type==='cardConfirm'){
+  const card=CARDS.find(c=>c.id===m.cardId);heading(card.name+' → '+stock.name);para(card.description,C.text,16);row('当前现金','¥'+money(v.cash));row('当前持仓','¥'+money(stock.value));row('剩余信用','¥'+money(v.credit));para('若不满足条件，不消耗行动和卡牌。选择目标后仍需要确认；关闭窗口可以取消。');btn('确认使用 '+card.name,()=>this.act({type:'card',cardId:card.id,stockId:stock.id}),true);btn('更换目标',()=>this.open({type:'card',cardId:card.id}));
+ }else if(m.type==='close'){
+  para('所有交易和卡牌将被锁定，随后一次性揭晓本日市场。',C.text,16);row('可用现金','¥'+money(v.cash));row('生活费','¥'+money(v.flags.delay?0:v.future[0].life));row('到期展期账单','¥'+money(v.future[0].delayed));row('现有债务利息','¥'+money(Math.round(v.debt*.01*(v.flags.halfInterest?.5:1))));row('剩余信用','¥'+money(v.credit));row('未使用行动',String(v.actionsLeft)+' 次');
+  const due=(v.flags.delay?0:v.future[0].life)+v.future[0].delayed+Math.round(v.debt*.01*(v.flags.halfInterest?.5:1));if(v.cash+v.credit<due)para('当前资金不足支付已知账单。请调整持仓；尚未兑现的收益不能保证变成现金。',C.red);else para('请注意：持仓上涨不会自动变成现金。市场变化和卡牌结算仍可能改变支付能力。');if(v.flags.delay)para('今日生活费已展期，两日后需要支付 125%。',C.gold);if(v.flags.cash)para('现金为王的减费条件在市场结算后检查，不在这里提前保证。');btn('锁定决策并收盘',()=>this.act({type:'close'}),true);btn('返回调整',()=>{this.modal=null;this.draw();});
+ }else if(m.type==='report'){
+  const r=v.report;if(!r){para('尚未生成结算');}else{heading(`DAY ${r.day} · ${v.phase==='bankrupt'?'现金流破产':'完成结算'}`);text(c,money(r.change,true),28,y,32,r.change>=0?C.mint:C.red,true);y+=51;para('今日净资产变化');for(const sr of r.stocks){const def=STOCKS.find(d=>d.id===sr.id);row(def.name,pct(sr.return),sr.return>=0?C.mint:C.red);if(sr.protectedExit)para('保护合约已触发，仓位已卖出',C.gold,11);}separator();row('投资收益（含卡牌与股息）',money(r.investment,true),r.investment>=0?C.mint:C.red);row('贷款利息','−'+money(r.interest));row('生活费','−'+money(r.life));if(r.due)row('到期账单','−'+money(r.due));if(r.borrowed)row('本日新增信用借款','+'+money(r.borrowed),C.gold);row('期末现金','¥'+money(r.cash));row('期末净资产','¥'+money(r.net));
+   if(v.phase==='bankrupt'){separator();row('无法支付的缺口','¥'+money(r.shortfall),C.red);row('完成生存天数',String(v.day-1)+' 天');row('最高净资产','¥'+money(v.stats.peak));row('最大回撤',(v.stats.maxDrawdown*100).toFixed(1)+'%');row('最佳记录',String(this.best.days)+' 天');heading('到期支出与欠款');r.fees.forEach(f=>para(`${f.label}：应付 ${money(f.amount)}，已付 ${money(f.paid)}，缺口 ${money(f.unpaid)}`));heading('最近三个交易日');for(const report of v.reports){para(`DAY ${report.day}  投资 ${money(report.investment,true)} / 现金 ${money(report.cash)}`,C.text);report.logs.forEach(item=>para(item.message,C.muted,11));}btn('重新开局',()=>this.open({type:'restart'}),true);
+   }else {btn('进入下一交易日 →',()=>this.act({type:'continue'}),true);heading('价格变化的主要原因');for(const sr of r.stocks){if(sr.factors){const f=sr.factors;para(`${STOCKS.find(d=>d.id===sr.id).name}：趋势 ${pct(f.trend)}，事件 ${pct(f.event)}，情绪 ${pct(f.sentiment)}，估值 ${pct(f.valuation)}，扰动 ${pct(f.noise)}`,C.muted,11);}}}}
+ }else if(m.type==='welcome'||m.type==='resume'||m.type==='broken'||m.type==='restart'){
+  if(m.type==='welcome'){text(c,'让每一天，都有余地。',28,y,24,C.text,true);y+=52;para('你有 ¥10,000 和六支虚构股票。阅读新闻，调查事件，决定仓位；不断增加的生活费会迫使你重新思考安全策略。',C.text,15);heading('每天怎么做');para('① 观察公开新闻与走势\n② 抽 5 张牌，最多使用 3 张\n③ 按比例买卖股票\n④ 留好现金，再收盘验证判断');para('现金和净资产不同。账单到期时，股票不会被自动卖出；剩余信用也不足时就会破产。',C.gold);if(m.readError)para('无法读取本地存档，请先确认浏览器存储权限。',C.red);btn('开始第 1 日 →',()=>{this.modal=null;this.persist();this.draw();},true);btn('先看完整规则',()=>this.open({type:'rules'}));
+  }else if(m.type==='resume'){heading(`上次进度 · DAY ${this.saved.day}`);para(`现金 ¥${money(this.saved.cash)}，${this.saved.phase==='decision'?'尚未收盘':this.saved.phase==='settlement'?'已结算，等待继续':'本局已结束'}。`);para('继续会保留已生成的事件、卡牌和随机状态。');btn('继续游戏',()=>{this.state=this.saved;this.modal=this.state.phase==='decision'?null:{type:'report'};this.saved=null;this.draw();},true);btn('重新开始',()=>this.open({type:'restart'}));
+  }else if(m.type==='broken'){para('存档无法读取，原存档已保留。你可以重试；主动开始新局会替换旧存档。',C.gold);btn('重试恢复',()=>{const r=this.platform.storage.read();const s=restore(r.value);if(s.ok){this.saved=s.state;this.open({type:'resume'});}else this.notify(s.message);});btn('放弃旧存档并新开局',()=>this.open({type:'restart'}));
+  }else{para('重新开局会替换当前进度。最佳生存记录会保留。',C.gold);btn('确认新开局',()=>this.start(),true);btn('返回',()=>this.open(m.returnTo||{type:this.state.phase==='decision'?'rules':'report'}));}
+ }else if(m.type==='news'){for(const n of v.news){heading(n.stockId?STOCKS.find(d=>d.id===n.stockId).name:'市场简报');para(n.source+' · DAY '+n.day,C.mint,11);para(n.text,C.text,15);separator();}}
+ else if(m.type==='information'){heading('已公开的事件日历');v.events.forEach(e=>para(`${STOCKS.find(d=>d.id===e.stockId).name} · ${e.name} · DAY ${e.due} 公布`,C.gold));heading('调查记录');if(!v.known.length)para('尚无深度情报。公开信息可在市场新闻查看。');v.known.slice().reverse().forEach(k=>{para(`${k.expired?'已过期':'有效至 DAY '+k.expires} · ${k.source}`,C.mint,11);para(k.text,C.text);separator();});}
+ else if(m.type==='assets'){row('现金','¥'+money(v.cash));row('股票与保证金','¥'+money(v.total-v.cash));row('债务','¥'+money(v.debt));row('剩余信用','¥'+money(v.credit));row('净资产','¥'+money(v.net));heading('未来三日已知基础支出');v.future.forEach(f=>row('DAY '+f.day,'¥'+money(f.life+f.delayed)));para('以上不包含未来新增借款利息，也不把股息和未来卖出所得当作已有现金。');heading('操作记录');v.logs.slice().reverse().forEach(item=>para(`DAY ${item.day} · ${item.message}`,C.muted,11));}
+ else if(m.type==='rules'){heading('判断  仓位  现金');para('价格 = 趋势 + 事件 + 情绪 + 估值 + 微小噪声。公开新闻免费，信息牌帮助缩小未知范围，但无法保证最终涨幅。');para('低风险股收益低。你最初依靠本金缓冲学习，生活费从 250 元逐档增加，后期需要寻找更高收益的机会。');heading('行动与卡牌');para('每日抽 5 张，最多使用 3 张，同名只用一次。信息、操作和防御共用行动资源。无效目标不扣行动。');para('重仓、追涨、满仓、加杠杆同股互斥；融资仓位不能叠加放大效果。止损、止盈、对冲同股互斥。');para('融资买入与低吸、补仓使用可用现金的 50%；做空锁定现金 50% 为当日保证金。满仓用完现金并锁定至收盘。');heading('债务与破产');para('信用上限 3,000 元，日息 1%。利息、展期账单和当日生活费依次支付，现金不足会自动借入剩余信用。不能付清则破产，股票不会自动卖出。');para('所有数据为虚构游戏规则，数值尚在原型测试阶段。自动保存每次操作；结算之后继续不会重复扣费。');row('最佳完成生存记录',String(this.best.days)+' 天');btn('重新开局',()=>this.open({type:'restart'}));}
+ this.maxScroll=Math.max(0,y+this.scroll-bottom+8);c.restore();this.clip=null;if(this.maxScroll>0){const thumb=Math.max(24,(bottom-top)**2/(this.maxScroll+bottom-top));box(c,398,top+(bottom-top-thumb)*this.scroll/this.maxScroll,3,thumb,C.line,1);text(c,'上下滑动查看更多',210,l.height-25,10,C.muted,false,'center');}
+ }
+}
+module.exports={createApp};
+
+},
+"src/core/engine.js":function(require,module,exports){
+const {createGame:makeState}=require('./state');const {initializeMarket,buildMarketResult,openNextDay}=require('./market');const {buy,sell}=require('./trading');const {useCard}=require('./cards');const {settleDay}=require('./settlement');const {getPlayerView}=require('./view');
+const createGame=seed=>initializeMarket(makeState(seed));
+function dispatch(s,action){if(!action||typeof action.type!=='string')return {ok:false,state:s,message:'无效操作'};switch(action.type){case 'buy':return buy(s,action.stockId,action.fraction);case 'sell':return sell(s,action.stockId,action.fraction);case 'card':return useCard(s,action.cardId,action.stockId,action.options);case 'close':return settleDay(s,buildMarketResult(s));case 'continue':return openNextDay(s);default:return {ok:false,state:s,message:'未知操作'};}}
+module.exports={createGame,dispatch,getPlayerView};
+
+},
+"src/core/state.js":function(require,module,exports){
+const {STOCKS}=require('../config/stocks');
+const {CARDS}=require('../config/cards');
+const {random,pick}=require('./random');
+function drawHand(s){const pools=[CARDS.filter(c=>!c.rare).map(c=>c.id),CARDS.filter(c=>c.rare).map(c=>c.id)];s.hand=[];for(let i=0;i<5;i++){const pool=pools[random(s)<.25?1:0];const id=pick(s,pool);s.hand.push(id);pool.splice(pool.indexOf(id),1);}}
+function createGame(seed=Date.now()){
+ const s={version:1,seed:seed>>>0,rngState:seed>>>0||1,day:1,phase:'decision',cash:1000000,debt:0,creditLimit:300000,stocks:{},lots:[],shorts:[],events:[],known:[],hand:[],actionsUsed:0,usedCards:[],effects:{},financedToday:[],bills:[],logs:[],reports:[],news:[],stats:{peak:1000000,maxDrawdown:0},flags:{},report:null};
+ for(const d of STOCKS){const trend=Math.floor(random(s)*3);s.stocks[d.id]={price:d.price,lastReturn:0,trend,forecast:[trend,trend,trend],valuation:2,sentiment:2,flow:0,history:Array.from({length:5},(_,i)=>({day:i-4,price:d.price,note:'上市基准'}))};}
+ drawHand(s);return s;
+}
+module.exports={createGame,drawHand};
+
+},
+"src/config/stocks.js":function(require,module,exports){
+const STOCKS=[
+ {id:'consumer',name:'安泰消费',code:'AT01',role:'防御',sector:'日常消费',price:2000,trend:.004,noise:.002,cap:.05,color:'#63d3bd'},
+ {id:'bank',name:'东海银行',code:'DH02',role:'分红',sector:'金融服务',price:1250,trend:.002,noise:.002,cap:.05,color:'#85b6f9'},
+ {id:'tech',name:'矩阵科技',code:'JZ03',role:'趋势',sector:'智能科技',price:5000,trend:.012,noise:.005,cap:.12,color:'#bda5ff'},
+ {id:'media',name:'巨浪传媒',code:'JL04',role:'情绪',sector:'文化传媒',price:3200,trend:.008,noise:.005,cap:.12,color:'#ef9ec6'},
+ {id:'energy',name:'远航能源',code:'YH05',role:'事件',sector:'能源供给',price:2800,trend:.003,noise:.008,cap:.35,color:'#edc981'},
+ {id:'bio',name:'神州生物',code:'SZ06',role:'高风险',sector:'生物医药',price:8000,trend:.002,noise:.008,cap:.35,color:'#faa68b'}
+];
+module.exports={STOCKS};
+
+},
+"src/config/cards.js":function(require,module,exports){
+const CARDS=[
+ ['fundamental','基本面','info',0,'查看本日及未来两日的基础趋势。'],
+ ['earnings','财报预期','info',0,'查看已排期财报的预期方向。'],
+ ['valuation','估值判断','info',0,'揭示当前估值，持续更新 3 日。'],
+ ['sentiment','市场情绪','info',0,'查看今日情绪与变化方向。'],
+ ['flow','主力动向','info',0,'查看今日资金流入或流出。'],
+ ['tomorrow','盘前消息','info',1,'提前看到目标股明日的一条新闻。'],
+ ['warning','风险预警','info',1,'扫描最临近的重大负面事件。'],
+ ['research','深度调研','info',1,'揭示当前事件的一条关键事实。'],
+ ['finance','融资买入','action',0,'买入使用可用现金 50%，额外借入投入的 50%。'],
+ ['leverage','加杠杆','action',1,'指定未融资仓位，本日盈亏 ×2。'],
+ ['short','做空','action',0,'以可用现金 50% 为保证金，建立等额当日空头。'],
+ ['concentrate','重仓','action',0,'锁定时市值占比 >60%，本日盈亏 ×1.2。'],
+ ['dip','低吸','action',0,'上日跌 >3%，投入现金 50%，再借投入的 10%。'],
+ ['average','补仓','action',0,'浮亏股投入现金 50%；留到收盘的新增份额返还 3%。'],
+ ['chase','追涨','action',0,'上日涨 >4%，本日正负盈亏 ×1.3。'],
+ ['allin','满仓','action',1,'全部现金买入并锁定；本日正收益 ×1.25。'],
+ ['stop','止损','defense',0,'当日仓位收益封底 −6%，触发后自动卖出。'],
+ ['profit','止盈','defense',0,'当日仓位收益封顶 +8%，触发后自动卖出。'],
+ ['hedge','对冲','defense',0,'本日亏损减半，盈利减少 25%。'],
+ ['reduce','减仓','defense',0,'立即卖出可卖持仓的 50%。'],
+ ['clear','清仓','defense',0,'卖出所有股票，当日禁止买入。'],
+ ['repay','降杠杆','defense',0,'偿还债务 50%，余额本日日息减半。'],
+ ['delay','展期','defense',1,'今日生活费两日后支付原额的 125%。'],
+ ['cash','现金为王','defense',0,'结算后现金占总资产 >60%，今日生活费减少 30%。']
+].map(([id,name,type,rare,description])=>({id,name,type,rare:!!rare,description,target:!['warning','clear','repay','delay','cash'].includes(id)}));
+module.exports={CARDS};
+
+},
+"src/core/random.js":function(require,module,exports){
+function nextRandom(n){let x=n>>>0||1;x^=x<<13;x^=x>>>17;x^=x<<5;return {rngState:x>>>0,value:(x>>>0)/4294967296};}
+function random(state){const n=nextRandom(state.rngState);state.rngState=n.rngState;return n.value;}
+function pick(state,list){return list[Math.floor(random(state)*list.length)];}
+module.exports={nextRandom,random,pick};
+
+},
+"src/core/market.js":function(require,module,exports){
+const {STOCKS}=require('../config/stocks');const {EVENTS}=require('../config/events');const {random,pick}=require('./random');const {clone}=require('./portfolio');const {drawHand}=require('./state');
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+function activeEvent(s,id){return s.events.find(e=>e.stockId===id&&!e.resolved);}
+function definition(e){return EVENTS.find(d=>d.id===e.templateId);}
+function makeEvent(s,id){const d=pick(s,EVENTS.filter(e=>e.stockId===id));s.events.push({id:`${d.id}-${s.day}`,templateId:d.id,stockId:id,start:s.day,due:s.day+d.duration,good:random(s)<d.weight,resolved:false});}
+function refreshNews(s){s.news=[];for(const e of s.events){const d=definition(e);if(e.resolved&&e.due===s.day-1)s.news.push({stockId:e.stockId,day:s.day,text:`${d.name}已兑现：${e.good?d.goodFact:d.badFact}`,source:'公司公告'});if(e.resolved)continue;const days=e.due-s.day;s.news.push({stockId:e.stockId,day:s.day,text:days===0?`${d.name}今日公布，等待收盘结果`:`${d.clue} · ${days} 日后公布`,source:'公司公告'});if(days===1)s.news.push({stockId:e.stockId,day:s.day,text:e.good?'业务进展披露积极，但市场预期已有升温':'公司提示进展存在不确定性，需留意风险',source:'行业观察'});}s.news.unshift({day:s.day,stockId:null,text:s.day===1?'开局资金是你的学习缓冲。先看线索，再决定仓位。':`今日生活成本进入第 ${Math.ceil(s.day/7)} 阶段，请预留支付现金。`,source:'市场简报'});}
+function initializeMarket(state){const s=clone(state);for(const d of STOCKS){if(!activeEvent(s,d.id))makeEvent(s,d.id);s.stocks[d.id].dailyNoise=(random(s)*2-1)*d.noise;}refreshNews(s);return s;}
+function buildMarketResult(s){const result={returns:{},dividends:{},factors:{},notes:{}};for(const d of STOCKS){const st=s.stocks[d.id],e=activeEvent(s,d.id),ed=e&&definition(e);
+ const trend=d.trend+st.forecast[0]*(d.noise<=.002?.002:.006),valuation=[.009,.004,0,-.007,-.018][st.valuation],sentiment=(st.sentiment-2)*(d.id==='media'?.009:.0025);
+ const event=e&&e.due===s.day?(e.good?ed.good:ed.bad):0;const noise=st.dailyNoise||0;
+ const r=clamp(trend+valuation+sentiment+event+noise,-Math.min(.25,d.cap),d.cap);result.returns[d.id]=r;result.factors[d.id]={trend,valuation,sentiment,event,noise};result.notes[d.id]=event?`${ed.name} · ${e.good?'兑现利好':'兑现利空'}`:'趋势与市场定价';
+ if(d.id==='bank'&&e&&e.due===s.day&&ed.name==='定期分红')result.dividends[d.id]=Math.round(st.price*(e.good?.02:.008));
+ }return result;}
+function openNextDay(state){if(state.phase!=='settlement')return {ok:false,state,message:'本局已经结束或尚未收盘'};const s=clone(state);for(const e of s.events)if(e.due===s.day)e.resolved=true;s.day++;s.phase='decision';s.actionsUsed=0;s.usedCards=[];s.effects={};s.financedToday=[];s.flags={};s.report=null;
+ for(const d of STOCKS){const st=s.stocks[d.id];st.forecast.shift();st.forecast.push(clamp(st.forecast[st.forecast.length-1]+pick(s,[-1,0,0,1]),-3,3));st.trend=st.forecast[0];st.sentiment=clamp(st.sentiment+pick(s,[-1,0,1]),0,4);if(st.lastReturn>.04)st.valuation=clamp(st.valuation+1,0,4);else if(st.lastReturn<-.04)st.valuation=clamp(st.valuation-1,0,4);st.flow=pick(s,[-1,0,1]);st.dailyNoise=(random(s)*2-1)*d.noise;
+  if(!activeEvent(s,d.id)&&random(s)<.45)makeEvent(s,d.id);
+ }
+ for(const l of s.lots)l.rebate=0;drawHand(s);refreshNews(s);return {ok:true,state:s,message:`第 ${s.day} 日开盘`};}
+module.exports={initializeMarket,buildMarketResult,openNextDay,activeEvent,definition};
+
+},
+"src/config/events.js":function(require,module,exports){
+const raw=[
+ ['consumer','原料降价','采购报价连续下行','采购成本下降并传导至利润','促销让利抵消成本改善',.025,-.018],
+ ['consumer','消费旺季','销售渠道提前备货','渠道动销超过备货量','销量不及预期造成库存',.03,-.025],
+ ['consumer','食品风波','消费者投诉受到关注','第三方抽检符合要求','抽检发现问题并要求召回',.022,-.045],
+ ['bank','定期分红','分红方案即将发布','董事会确认按期派息','为准备金缩减派息',.012,-.02],
+ ['bank','坏账披露','部分贷款逾期率变化','风险准备已覆盖坏账','新增拨备超过预期',.022,-.04],
+ ['bank','利率调整','市场等待新的利率政策','调整改善银行息差','调整压缩银行息差',.025,-.03],
+ ['tech','新品发布','供应链订单与发布会临近','产品测试超过市场预期','产品表现未达市场预期',.085,-.095],
+ ['tech','大客户订单','企业客户进入产品试用','采购合同已完成关键签署','预算削减导致谈判终止',.09,-.07],
+ ['tech','研发验证','研发进入最终验证阶段','关键性能测试达到里程碑','测试缺陷导致交付延期',.08,-.10],
+ ['media','内容爆款','话题热度与讨论上升','热度有效转化为付费收入','曝光未带来付费转化',.095,-.08],
+ ['media','用户增长','下载榜排名持续提高','留存与活跃用户同步增加','买量结束后留存明显下降',.08,-.075],
+ ['media','舆论危机','合作方关注舆论争议','证据澄清争议并恢复合作','争议被证实并流失合作方',.07,-.11],
+ ['energy','供应中断','产区出现设备与运输异常','短缺将持续影响现货价格','产能快速恢复并消除溢价',.18,-.12],
+ ['energy','库存变化','物流与需求数据出现分歧','真实库存低于需求','库存增加超过需求',.14,-.13],
+ ['energy','政策补贴','补贴政策进入征求意见阶段','公司满足政策支持条件','公司未达到资格门槛',.16,-.14],
+ ['bio','临床结果','试验数据即将揭晓','核心临床指标达到终点','核心临床指标未达到终点',.29,-.24],
+ ['bio','药品审批','审批结果将在近日公布','审批材料已满足监管要求','关键材料仍需补充验证',.32,-.25],
+ ['bio','专利争议','关键专利诉讼即将裁定','证据足以维持专利权利','专利范围被限制',.25,-.22]
+];
+const EVENTS=raw.map(([stockId,name,clue,goodFact,badFact,good,bad],i)=>({id:'event'+i,stockId,name,clue,goodFact,badFact,good,bad,earnings:[0,1,4,7,10,13].includes(i),weight:.55,duration:3}));
+module.exports={EVENTS};
+
+},
+"src/core/portfolio.js":function(require,module,exports){
+const clone=s=>JSON.parse(JSON.stringify(s));
+const roundQty=q=>Math.floor((q+1e-10)*1e6)/1e6;
+const holdings=(s,id)=>s.lots.filter(l=>l.stockId===id);
+const quantity=(s,id)=>holdings(s,id).reduce((n,l)=>n+l.qty,0);
+const value=(s,id)=>Math.round(quantity(s,id)*s.stocks[id].price);
+const grossAssets=s=>s.cash+s.lots.reduce((n,l)=>n+Math.round(l.qty*s.stocks[l.stockId].price),0)+s.shorts.reduce((n,l)=>n+l.margin,0);
+const netWorth=s=>grossAssets(s)-s.debt;
+function transact(s,fn){try{const d=clone(s);if(d.phase!=='decision')throw Error('请先进入下一个交易日');const message=fn(d);return {ok:true,state:d,message:message||'操作完成'};}catch(e){return {ok:false,state:s,message:e.message};}}
+function log(s,message){s.logs.push({day:s.day,message});if(s.logs.length>300)s.logs.shift();}
+module.exports={clone,roundQty,holdings,quantity,value,grossAssets,netWorth,transact,log};
+
+},
+"src/core/trading.js":function(require,module,exports){
+const {roundQty,holdings,quantity,transact,log}=require('./portfolio');
+function validStock(s,id){if(!s.stocks[id])throw Error('找不到这支股票');}
+function ratio(f){if(!Number.isFinite(f)||f<=0||f>1)throw Error('请选择有效交易比例');}
+function doBuy(s,id,f,opts={}){
+ validStock(s,id);ratio(f);if(s.flags.noBuy)throw Error('清仓后今日不能买入');
+ if(s.shorts.some(l=>l.stockId===id))throw Error('同一股票不能同时做多和做空');
+ if(s.effects[id]?.locked)throw Error('满仓持仓已锁定至收盘');
+ const own=Math.floor(s.cash*f);if(own<=0)throw Error('可用现金不足');
+ const borrowed=Math.min(Math.floor(own*(opts.financeRatio||0)),s.creditLimit-s.debt);
+ const qty=roundQty((own+borrowed)/s.stocks[id].price);if(qty<=0)throw Error('金额不足以买入');
+ const paid=Math.round(qty*s.stocks[id].price);const actualBorrowed=Math.min(borrowed,paid);s.cash-=paid-actualBorrowed;s.debt+=actualBorrowed;
+ s.lots.push({stockId:id,qty,cost:paid,day:s.day,financed:actualBorrowed>0,rebate:opts.rebate||0});
+ if(actualBorrowed>0&&!s.financedToday.includes(id))s.financedToday.push(id);
+ log(s,`买入 ${id}，投入 ${(paid/100).toFixed(2)}，借款 ${(actualBorrowed/100).toFixed(2)}`);return '买入成功';
+}
+function doSell(s,id,f,opts={}){
+ validStock(s,id);ratio(f);if(s.effects[id]?.locked&&!opts.force)throw Error('满仓持仓已锁定至收盘');
+ const lots=holdings(s,id);if(!lots.length)throw Error('没有可卖出的持仓');let proceeds=0;
+ for(const l of lots){const sold=f===1?l.qty:roundQty(l.qty*f);proceeds+=Math.round(sold*s.stocks[id].price);const fraction=sold/l.qty;l.cost=Math.round(l.cost*(1-fraction));l.qty=roundQty(l.qty-sold);}
+ s.lots=s.lots.filter(l=>l.qty>0);s.cash+=proceeds;log(s,`卖出 ${id}，回收 ${(proceeds/100).toFixed(2)}`);return '卖出成功';
+}
+const buy=(s,id,f)=>transact(s,d=>doBuy(d,id,f));
+const sell=(s,id,f)=>transact(s,d=>doSell(d,id,f));
+module.exports={buy,sell,doBuy,doSell,validStock};
+
+},
+"src/core/cards.js":function(require,module,exports){
+const {CARDS}=require('../config/cards');const {transact,quantity,holdings,log}=require('./portfolio');const {doBuy,doSell,validStock}=require('./trading');const {doReveal}=require('./information');
+function useCard(state,cardId,id,options={}){return transact(state,s=>{
+ const card=CARDS.find(c=>c.id===cardId);if(!card||!s.hand.includes(cardId))throw Error('手中没有这张卡');if(s.actionsUsed>=3)throw Error('今日三次行动已用完');if(s.usedCards.includes(cardId))throw Error('同名卡每天只能使用一次');
+ if(card.target)validStock(s,id);let message='';
+ const effect=()=>s.effects[id]||(s.effects[id]={});
+ const requireLong=()=>{if(quantity(s,id)<=0)throw Error('请先持有这支股票');};
+ const amplify=type=>{requireLong();if(effect().amplify)throw Error('该股已有收益放大效果');if(s.financedToday.includes(id)||holdings(s,id).some(l=>l.financed))throw Error('融资仓位不能叠加收益放大');effect().amplify=type;};
+ if(card.type==='info')message=doReveal(s,cardId,id);
+ else switch(cardId){
+ case 'finance':case 'dip':{if(effect().amplify)throw Error('收益放大仓位不能再次融资');if(s.debt>=s.creditLimit)throw Error('信用额度已用尽');if(cardId==='dip'&&s.stocks[id].lastReturn>=-.03)throw Error('低吸需要上日跌幅超过 3%');doBuy(s,id,.5,{financeRatio:cardId==='finance'?.5:.1});break;}
+ case 'leverage':case 'concentrate':amplify(cardId);break;
+ case 'chase':if(s.stocks[id].lastReturn<=.04)throw Error('追涨需要上日涨幅超过 4%');amplify(cardId);break;
+ case 'allin':if(effect().amplify||s.financedToday.includes(id)||holdings(s,id).some(l=>l.financed))throw Error('已有融资或收益放大效果');doBuy(s,id,1);effect().amplify='allin';effect().locked=true;break;
+ case 'average':{requireLong();const lots=holdings(s,id);const avg=lots.reduce((n,l)=>n+l.cost,0)/quantity(s,id);if(s.stocks[id].price>=avg)throw Error('补仓需要开盘浮亏持仓');if(!lots.some(l=>l.day<s.day))throw Error('补仓需要前日已持有的股票');doBuy(s,id,.5,{rebate:.03});break;}
+ case 'short':{if(s.flags.noBuy)throw Error('清仓后不能建立新仓');if(quantity(s,id)>0||s.shorts.some(l=>l.stockId===id))throw Error('同股多空互斥，不能重复做空');const margin=Math.floor(s.cash*.5);if(margin<=0)throw Error('没有可用保证金');s.cash-=margin;s.shorts.push({stockId:id,margin});break;}
+ case 'stop':case 'profit':case 'hedge':requireLong();if(effect().protect)throw Error('该股已有保护效果');effect().protect=cardId;break;
+ case 'reduce':doSell(s,id,.5);break;
+ case 'clear':if(Object.values(s.effects).some(e=>e.locked))throw Error('存在满仓锁定，不能清仓');if(!s.lots.length)throw Error('没有可清仓持股');for(const stockId of [...new Set(s.lots.map(l=>l.stockId))])doSell(s,stockId,1);s.flags.noBuy=true;break;
+ case 'repay':{if(s.debt<=0)throw Error('当前没有融资负债');const amount=Math.round(s.debt*.5);if(s.cash<amount)throw Error('现金不足以偿还债务的 50%');s.cash-=amount;s.debt-=amount;s.flags.halfInterest=true;break;}
+ case 'delay':if(s.flags.cash)throw Error('展期与现金为王不能同日使用');s.flags.delay=true;break;
+ case 'cash':if(s.flags.delay)throw Error('现金为王与展期不能同日使用');s.flags.cash=true;break;
+ default:throw Error('卡牌尚未实现');
+ }
+ s.hand.splice(s.hand.indexOf(cardId),1);s.usedCards.push(cardId);s.actionsUsed++;log(s,`使用 ${card.name}${id?' → '+id:''}${message?' · '+message:''}`);return message||`${card.name}已生效`;
+});}
+module.exports={useCard};
+
+},
+"src/core/information.js":function(require,module,exports){
+const {transact}=require('./portfolio');const {activeEvent,definition}=require('./market');
+const valuationNames=['严重低估','低估','合理','偏高','过热'];const sentimentNames=['恐慌','悲观','平静','乐观','狂热'];
+function doReveal(s,cardId,id){if(cardId!=='warning'&&!s.stocks[id])throw Error('请选择有效股票');const st=s.stocks[id],e=activeEvent(s,id);let text='',expires=s.day,source='卡牌调研';
+ switch(cardId){
+ case 'fundamental':text=`基础趋势：${st.forecast.map((n,i)=>`${i?'未来 '+i+' 日':'今日'} ${n>0?'上涨':n<0?'下行':'震荡'}`).join(' / ')}（不含事件与估值）`;expires=s.day+2;break;
+ case 'valuation':text=`估值：${valuationNames[st.valuation]}。有效期内持续更新`;expires=s.day+2;break;
+ case 'sentiment':text=`情绪：${sentimentNames[st.sentiment]}，${st.sentiment>2?'偏增强':st.sentiment<2?'偏减弱':'平稳'}`;break;
+ case 'flow':text=`大资金：${st.flow>0?'流入':st.flow<0?'流出':'中性'}（资金信号不保证事件方向）`;break;
+ case 'research':if(!e)throw Error('该股暂无可调查的重大事件');if(s.known.some(k=>k.eventId===e.id&&k.cardId===cardId))throw Error('关键事实已经揭示');text=`关键事实 · ${definition(e).name}：${e.good?definition(e).goodFact:definition(e).badFact}`;expires=e.due;break;
+ case 'earnings':if(!e||!definition(e).earnings)throw Error('该股暂无财务披露事件');text=`财务披露预期：${e.good?'偏利好':'偏利空'}，最终价格仍受估值影响`;expires=e.due;break;
+ case 'tomorrow':if(!e||e.due<s.day+1)throw Error('该股明日没有可提前揭示的新闻');text=e.due===s.day+1?`明日公告：${e.good?definition(e).goodFact:definition(e).badFact}`:`明日跟进：${definition(e).clue}，距离公布 ${e.due-s.day-1} 日`;expires=s.day+1;break;
+ case 'warning':{const bad=s.events.filter(x=>!x.resolved&&!x.good).sort((a,b)=>a.due-b.due)[0];text=bad?`风险预警：${bad.stockId} 最接近重大负面事件，预计 ${bad.due-s.day} 日后公布`:'风险预警：当前未发现重大负面事件';id=bad?.stockId||null;expires=bad?.due||s.day;break;}
+ default:throw Error('不是信息卡');}
+ s.known.push({stockId:id,cardId,eventId:e?.id||null,text,source,day:s.day,expires});return text;}
+const revealInformation=(s,cardId,id)=>transact(s,d=>doReveal(d,cardId,id));
+module.exports={doReveal,revealInformation,valuationNames,sentimentNames};
+
+},
+"src/core/settlement.js":function(require,module,exports){
+const {clone,quantity,grossAssets,netWorth,log}=require('./portfolio');
+const {livingCost}=require('../config/economy');
+function settleDay(state,marketResult){
+ if(state.phase!=='decision')return {ok:false,state,message:'本日已结算'};
+ const s=clone(state),before=netWorth(s),interest=Math.round(s.debt*.01*(s.flags.halfInterest?.5:1));
+ const report={day:s.day,stocks:[],investment:0,interest,life:livingCost(s.day),due:0,borrowed:0,shortfall:0,fees:[],effectDelta:0,dividends:0,openingCash:s.cash,openingNet:before,openingGross:grossAssets(s),logs:s.logs.filter(l=>l.day===s.day)};
+ for(const [id,stock] of Object.entries(s.stocks)){
+  const r=marketResult.returns[id]||0,div=marketResult.dividends?.[id]||0,old=stock.price;
+  const income=Math.round(quantity(s,id)*div);s.cash+=income;report.dividends+=income;
+  stock.price=Math.max(1,Math.round(Math.max(1,old-div)*(1+r)));stock.lastReturn=(stock.price-old)/old;
+  report.stocks.push({id,old,price:stock.price,return:stock.lastReturn,dividend:income,perShareDividend:div,factors:marketResult.factors?.[id]||null});
+  stock.history.push({day:s.day,price:stock.price,note:marketResult.notes?.[id]||'市场结算'});if(stock.history.length>60)stock.history.shift();
+ }
+ for(const l of s.shorts)s.cash+=Math.round(l.margin*(1-(marketResult.returns[l.stockId]||0)));
+ s.shorts=[];
+ if(Object.keys(s.effects).length||s.lots.some(l=>l.rebate))require('./effects').applyPositionEffects(s,report);
+ report.investment=netWorth(s)-before;
+ if(s.flags.delay){s.bills.push({dueDay:s.day+2,amount:Math.round(report.life*1.25),sourceDay:s.day});report.life=0;}
+ if(s.flags.cash&&grossAssets(s)>0&&s.cash/grossAssets(s)>.6)report.life=Math.round(report.life*.7);
+ const due=s.bills.filter(b=>b.dueDay<=s.day);report.due=due.reduce((n,b)=>n+b.amount,0);
+ function pay(amount,label){const gap=Math.max(0,amount-s.cash);const borrow=Math.min(gap,s.creditLimit-s.debt);s.cash+=borrow;s.debt+=borrow;report.borrowed+=borrow;const paid=Math.min(s.cash,amount);s.cash-=paid;const unpaid=amount-paid;report.shortfall+=unpaid;report.fees.push({label,amount,paid,unpaid});}
+ if(s.cash<0){const loss=-s.cash;s.cash=0;pay(loss,'卡牌结算差额');}
+ pay(interest,'贷款利息');for(const b of due)pay(b.amount,`第 ${b.sourceDay} 日展期账单`);pay(report.life,'今日生活费');
+ s.bills=s.bills.filter(b=>b.dueDay>s.day);s.phase=report.shortfall?'bankrupt':'settlement';
+ report.cash=s.cash;report.debt=s.debt;report.net=netWorth(s);report.change=report.net-before;report.nextCost=livingCost(s.day+1);
+ s.stats.peak=Math.max(s.stats.peak,report.net);s.stats.maxDrawdown=Math.max(s.stats.maxDrawdown,(s.stats.peak-report.net)/Math.max(1,s.stats.peak));
+ s.report=report;s.reports.push(report);if(s.reports.length>60)s.reports.shift();log(s,report.shortfall?`现金流破产，支付缺口 ${(report.shortfall/100).toFixed(2)}`:`收盘净资产 ${(report.net/100).toFixed(2)}`);
+ return {ok:true,state:s,message:report.shortfall?'现金流破产':'本日结算完成'};
+}
+module.exports={settleDay};
+
+},
+"src/config/economy.js":function(require,module,exports){
+function livingCost(day) {
+  if (!Number.isInteger(day) || day < 1) throw new Error('交易日无效');
+  if(day<=7)return 25000;
+  if(day<=14)return 40000;
+  if(day<=21)return 65000;
+  if(day<=28)return 100000;
+  if(day<=35)return 150000;
+  if(day<=45)return 220000;
+  let yuan=2200;
+  for(let n=0;n<=Math.floor((day-46)/5);n++)yuan=Math.ceil(yuan*1.35);
+  return yuan*100;
+}
+module.exports={livingCost};
+
+},
+"src/core/effects.js":function(require,module,exports){
+const {quantity}=require('./portfolio');const {doSell}=require('./trading');
+function applyPositionEffects(s,report){
+ for(const l of s.lots)if(l.rebate&&l.day===s.day){const reward=Math.round(l.cost*l.rebate);s.cash+=reward;report.effectDelta+=reward;}
+ for(const row of report.stocks){const qty=quantity(s,row.id);if(!qty)continue;const e=s.effects[row.id]||{};const basis=qty*row.old;const base=Math.round(qty*(row.price-row.old+(row.perShareDividend||0)));let wanted=base;
+  if(e.amplify==='leverage')wanted=base*2;
+  if(e.amplify==='chase')wanted=Math.round(base*1.3);
+  if(e.amplify==='allin'&&base>0)wanted=Math.round(base*1.25);
+  if(e.amplify==='concentrate'&&basis/report.openingGross>.6)wanted=Math.round(base*1.2);
+  let exit=false;
+  if(e.protect==='hedge')wanted=Math.round(wanted*(wanted<0?.5:.75));
+  if(e.protect==='stop'&&wanted/basis<-.06){wanted=Math.round(-basis*.06);exit=true;}
+  if(e.protect==='profit'&&wanted/basis>=.08){wanted=Math.round(basis*.08);exit=true;}
+  const delta=wanted-base;s.cash+=delta;report.effectDelta+=delta;row.positionReturn=wanted/basis;
+  if(exit){doSell(s,row.id,1,{force:true});row.protectedExit=true;}
+ }
+}
+module.exports={applyPositionEffects};
+
+},
+"src/core/view.js":function(require,module,exports){
+const {STOCKS}=require('../config/stocks');const {CARDS}=require('../config/cards');const {livingCost}=require('../config/economy');const {netWorth,grossAssets,quantity,value,holdings,clone}=require('./portfolio');const {definition}=require('./market');const {valuationNames}=require('./information');
+function getPlayerView(s){const total=grossAssets(s),future=Array.from({length:3},(_,i)=>({day:s.day+i,life:livingCost(s.day+i),delayed:s.bills.filter(b=>b.dueDay===s.day+i).reduce((n,b)=>n+b.amount,0)}));const known=s.known.map(k=>({...k,expired:k.expires<s.day,text:k.cardId==='valuation'&&k.expires>=s.day?`估值：${valuationNames[s.stocks[k.stockId].valuation]}。持续更新中`:k.text}));
+ return {seed:s.seed,day:s.day,phase:s.phase,cash:s.cash,debt:s.debt,credit:s.creditLimit-s.debt,net:netWorth(s),total,actionsLeft:3-s.actionsUsed,hand:s.hand.map(id=>CARDS.find(c=>c.id===id)),news:clone(s.news),known,report:clone(s.report),reports:clone(s.reports.slice(-3)),logs:clone(s.logs.slice(-20)),bills:clone(s.bills),flags:clone(s.flags),future,stats:clone(s.stats),pressure:s.cash>=future.reduce((n,b)=>n+b.life+b.delayed,0)?'低':s.cash>=future[0].life+future[0].delayed?'中':'高',
+ stocks:STOCKS.map(d=>({...d,price:s.stocks[d.id].price,lastReturn:s.stocks[d.id].lastReturn,history:clone(s.stocks[d.id].history),qty:quantity(s,d.id),value:value(s,d.id),cost:holdings(s,d.id).reduce((n,l)=>n+l.cost,0),weight:total?value(s,d.id)/total:0,effect:clone(s.effects[d.id]||{}),short:s.shorts.find(l=>l.stockId===d.id)?.margin||0,financed:s.financedToday.includes(d.id)||holdings(s,d.id).some(l=>l.financed),info:known.filter(k=>k.stockId===d.id),event:s.events.filter(e=>!e.resolved&&e.stockId===d.id).map(e=>({name:definition(e).name,due:e.due,days:e.due-s.day}))[0]||null})),
+ events:s.events.filter(e=>!e.resolved).map(e=>({id:e.id,stockId:e.stockId,name:definition(e).name,due:e.due,days:e.due-s.day}))};}
+module.exports={getPlayerView};
+
+},
+"src/core/save.js":function(require,module,exports){
+const {STOCKS}=require('../config/stocks');const {CARDS}=require('../config/cards');const {EVENTS}=require('../config/events');
+const serialize=s=>JSON.stringify(s);
+function restore(text){try{const s=JSON.parse(text);function check(ok){if(!ok)throw Error('存档结构不完整或数据无效');}check(s&&s.version===1);check(Number.isInteger(s.day)&&s.day>=1&&s.day<100000);check(['decision','settlement','bankrupt'].includes(s.phase));for(const k of ['cash','debt','creditLimit','rngState','seed'])check(Number.isSafeInteger(s[k])&&s[k]>=0);check(s.creditLimit===300000&&s.debt<=s.creditLimit);check(Number.isInteger(s.actionsUsed)&&s.actionsUsed>=0&&s.actionsUsed<=3);
+ const validId=id=>STOCKS.some(d=>d.id===id);const validCard=id=>CARDS.some(c=>c.id===id);
+ for(const k of ['lots','shorts','hand','usedCards','events','known','bills','news','logs','reports','financedToday'])check(Array.isArray(s[k]));
+ check(s.hand.length<=5&&new Set(s.hand).size===s.hand.length&&s.hand.every(validCard)&&s.usedCards.every(validCard));
+ check(s.flags&&s.effects&&s.stats&&typeof s.stocks==='object');
+ for(const d of STOCKS){const st=s.stocks[d.id];check(st&&Number.isSafeInteger(st.price)&&st.price>0&&Array.isArray(st.forecast)&&st.forecast.length===3&&Array.isArray(st.history));check(Number.isFinite(st.lastReturn)&&[st.valuation,st.sentiment].every(x=>Number.isInteger(x)&&x>=0&&x<=4));check(st.forecast.every(x=>Number.isInteger(x)&&x>=-3&&x<=3));}
+ for(const l of s.lots)check(validId(l.stockId)&&Number.isFinite(l.qty)&&l.qty>0&&Number.isSafeInteger(l.cost)&&l.cost>=0&&Number.isInteger(l.day)&&typeof l.financed==='boolean'&&[0,.03].includes(l.rebate));
+ for(const l of s.shorts)check(validId(l.stockId)&&Number.isSafeInteger(l.margin)&&l.margin>0);
+ for(const e of s.events)check(validId(e.stockId)&&EVENTS.some(d=>d.id===e.templateId&&d.stockId===e.stockId)&&typeof e.good==='boolean'&&typeof e.resolved==='boolean'&&Number.isInteger(e.due)&&Number.isInteger(e.start));
+ for(const b of s.bills)check(Number.isInteger(b.dueDay)&&Number.isSafeInteger(b.amount)&&b.amount>0);
+ for(const k of s.known)check((k.stockId===null||validId(k.stockId))&&validCard(k.cardId)&&typeof k.text==='string'&&Number.isInteger(k.expires));
+ for(const d of STOCKS)for(const item of s.stocks[d.id].history)check(item&&Number.isFinite(item.day)&&Number.isSafeInteger(item.price)&&item.price>0&&typeof item.note==='string');
+ for(const n of s.news)check(n&&(n.stockId===null||validId(n.stockId))&&typeof n.text==='string'&&typeof n.source==='string');
+ for(const l of s.logs)check(l&&Number.isInteger(l.day)&&typeof l.message==='string');
+ check(Number.isFinite(s.stats.peak)&&s.stats.peak>0&&Number.isFinite(s.stats.maxDrawdown)&&s.stats.maxDrawdown>=0);
+ for(const [id,e] of Object.entries(s.effects)){check(validId(id)&&e&&typeof e==='object');if(e.amplify)check(['leverage','concentrate','chase','allin'].includes(e.amplify));if(e.protect)check(['stop','profit','hedge'].includes(e.protect));}
+ function validateReport(r){check(r&&Array.isArray(r.stocks)&&Array.isArray(r.fees)&&Array.isArray(r.logs));for(const k of ['day','investment','interest','life','due','borrowed','shortfall','cash','net','change'])check(Number.isFinite(r[k]));for(const row of r.stocks){check(row&&validId(row.id)&&Number.isFinite(row.return)&&Number.isSafeInteger(row.price)&&row.price>0);if(row.factors)check(['trend','event','sentiment','valuation','noise'].every(k=>Number.isFinite(row.factors[k])));}for(const item of r.logs)check(item&&typeof item.message==='string');for(const f of r.fees)check(f&&typeof f.label==='string'&&['amount','paid','unpaid'].every(k=>Number.isSafeInteger(f[k])&&f[k]>=0));}
+ for(const r of s.reports)validateReport(r);if(s.report)validateReport(s.report);
+ check(s.phase==='decision'||s.report&&Number.isSafeInteger(s.report.cash));
+ return {ok:true,state:s,message:'已恢复上次进度'};
+ }catch(e){return {ok:false,state:null,message:'存档无法读取。原存档已保留，可重试或主动选择新开局。'};}}
+module.exports={serialize,restore};
+
+},
+"src/ui/layout.js":function(require,module,exports){
+function layout(metrics){const width=420,scale=width/metrics.width,height=Math.max(600,(metrics.height-(metrics.safeTop||0)-(metrics.safeBottom||0))*scale);const cards={x:18,y:height-220,w:384,h:91};const market={x:18,y:190,rowH:Math.min(56,(cards.y-54-210)/6)};return {width,height,scale,safeTop:metrics.safeTop||0,cards,market,close:{x:18,y:height-112,w:384,h:46},nav:{x:18,y:height-54,w:384,h:42},modal:{x:12,y:48,w:396,h:height-66}};}
+function hitTest(targets,x,y,layer=0){return [...targets].reverse().find(t=>t.layer===layer&&x>=t.x&&x<=t.x+t.w&&y>=t.y&&y<=t.y+t.h)||null;}
+module.exports={layout,hitTest};
+
+},
+"src/ui/draw.js":function(require,module,exports){
+const C={bg:'#0c141d',panel:'#141f2c',panel2:'#1b2938',line:'#2a3a49',text:'#edf2f5',muted:'#91a3b4',mint:'#91dac4',red:'#f08c88',blue:'#91b6f9',gold:'#eac58a'};
+function font(ctx,size=14,bold=false){ctx.font=`${bold?'600':'400'} ${size}px "Microsoft YaHei", "PingFang SC", sans-serif`;ctx.textBaseline='top';}
+function text(ctx,t,x,y,size=14,color=C.text,bold=false,align='left'){font(ctx,size,bold);ctx.fillStyle=color;ctx.textAlign=align;ctx.fillText(String(t),x,y);ctx.textAlign='left';}
+function box(ctx,x,y,w,h,color=C.panel,r=12){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();ctx.fillStyle=color;ctx.fill();}
+function line(ctx,x,y,w,color=C.line){ctx.strokeStyle=color;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+w,y);ctx.stroke();}
+function wrap(ctx,t,x,y,w,size=13,color=C.muted,lineH=21){font(ctx,size);let row='',cy=y;for(const ch of String(t)){if(ch==='\n'||ctx.measureText(row+ch).width>w){text(ctx,row,x,cy,size,color);cy+=lineH;row=ch==='\n'?'':ch;}else row+=ch;}if(row)text(ctx,row,x,cy,size,color);return cy+lineH;}
+function spark(ctx,history,x,y,w,h,color=C.mint){if(!history.length)return;const vals=history.map(v=>v.price),lo=Math.min(...vals),hi=Math.max(...vals),span=Math.max(hi-lo,hi*.005,1);ctx.beginPath();history.forEach((p,i)=>{const xx=x+i*w/Math.max(1,history.length-1),yy=y+h/2-(p.price-(lo+hi)/2)/span*h*.8;i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy);});ctx.strokeStyle=color;ctx.lineWidth=1.8;ctx.stroke();}
+const money=(n,sign=false)=>(sign&&n>0?'+':'')+(n/100).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
+const pct=n=>(n>0?'+':'')+(n*100).toFixed(2)+'%';
+module.exports={C,text,box,line,wrap,spark,money,pct};
+
+},
+"src/ui/screens.js":function(require,module,exports){
+const {C,text,box,line,spark,wrap,money,pct}=require('./draw');
+function drawMarket(app,view,l){const c=app.ctx,w=l.width;const label=app.tab==='market'?'市场':app.tab==='info'?'情报':'资产';
+ text(c,'余 日',18,18,18,C.text,true);text(c,'STOCK SURVIVAL',82,22,10,C.muted);box(c,w-104,13,86,30,C.panel2,15);text(c,`DAY ${String(view.day).padStart(2,'0')}`,w-61,20,12,C.mint,true,'center');
+ text(c,'净资产',18,65,11,C.muted);text(c,money(view.net),18,83,29,C.text,true);text(c,'现金压力 '+view.pressure,w-18,69,12,view.pressure==='高'?C.red:C.mint,false,'right');text(c,`余额 ¥${money(view.cash)}`,w-18,96,13,C.muted,false,'right');
+ line(c,18,127,w-36);text(c,'今日支出',18,140,11,C.muted);text(c,'¥'+money(view.future[0].life+view.future[0].delayed),18,156,15,C.gold,true);text(c,'负债',163,140,11,C.muted);text(c,'¥'+money(view.debt),163,156,15,C.text,true);app.button('规则',326,138,76,32,()=>app.open({type:'rules'}),false,0,true);
+ if(app.tab==='market'){
+ text(c,'资产 / 06',18,l.market.y-3,11,C.muted);text(c,'上日涨跌',402,l.market.y-3,10,C.muted,false,'right');app.button('新闻 →',170,l.market.y-8,76,22,()=>app.open({type:'news'}),false,0,true);
+ view.stocks.forEach((s,i)=>{const y=l.market.y+20+i*l.market.rowH;line(c,18,y+l.market.rowH-3,384);text(c,s.name,18,y+6,14,C.text,true);if(l.market.rowH>=44)text(c,s.role+(s.event?` · ${s.event.days===0?'今日公布':s.event.days+'日后事件'}`:''),18,y+27,10,C.muted);spark(c,s.history.slice(-5),173,y+8,66,Math.min(27,l.market.rowH-12),s.lastReturn>=0?C.mint:C.red);text(c,(s.price/100).toFixed(2),325,y+7,15,C.text,true,'right');text(c,pct(s.lastReturn),402,y+8,13,s.lastReturn>=0?C.mint:C.red,true,'right');if(s.qty&&l.market.rowH>=44)text(c,'持仓 '+Math.round(s.weight*100)+'%',325,y+28,10,C.gold,false,'right');app.target({x:18,y,w:384,h:l.market.rowH,id:s.id,fn:()=>app.open({type:'stock',id:s.id})});});
+ if(l.market.rowH>=44){const ny=l.market.y+20+6*l.market.rowH+8;box(c,18,ny,384,32,C.panel);text(c,'资讯',28,ny+10,10,C.mint);const news=view.news.filter(n=>n.stockId)[app.newsIndex%Math.max(1,view.news.filter(n=>n.stockId).length)];const t=(news?.text||view.news[0]?.text||'观察市场，预留现金');text(c,t.length>25?t.slice(0,25)+'…':t,65,ny+9,11,C.muted);app.target({x:18,y:ny,w:384,h:32,fn:()=>app.open({type:'news'})});}
+ }else{
+ text(c,label+' / '+(app.tab==='info'?'已知线索':'持仓概览'),18,190,13,C.text,true);const top=219,bottom=l.cards.y-39;let y=top;
+ if(app.tab==='info'){if(!view.known.length){text(c,'信息优势，需要用行动换取。',18,y,15,C.text);wrap(c,'查看公开新闻，或使用底部信息卡获取更深入的线索。重大事件将在日历标注的交易日揭晓。',18,y+35,370,13);}
+ for(const k of view.known.slice(-4).reverse()){if(y+64>bottom)break;box(c,18,y,384,62,C.panel);text(c,k.expired?'已过期':'有效至 DAY '+k.expires,30,y+9,10,k.expired?C.muted:C.mint);text(c,k.text.slice(0,26)+(k.text.length>26?'…':''),30,y+29,12,C.text);y+=70;}app.button('查看全部情报与事件',18,bottom-34,384,32,()=>app.open({type:'information'}),false);}
+ else {for(const s of view.stocks.filter(s=>s.qty||s.short)){if(y+66>bottom)break;box(c,18,y,384,62,C.panel);text(c,s.name+(s.short?' · 空头':''),30,y+10,14,C.text,true);text(c,'¥'+money(s.short||s.value),389,y+10,14,C.text,true,'right');text(c,s.short?'当日到期，保证金锁定':`浮盈 ${money(s.value-s.cost,true)} · 仓位 ${(s.weight*100).toFixed(1)}%`,30,y+35,11,C.muted);app.target({x:18,y,w:384,h:62,fn:()=>app.open({type:'stock',id:s.id})});y+=70;}
+ if(y===top){text(c,'当前没有持仓',18,y,17,C.text,true);wrap(c,'保留现金能支付账单，但现金本身不会增长。去市场寻找有依据的投资机会。',18,y+38,370,13);}app.button('现金流与账单明细',18,bottom-34,384,32,()=>app.open({type:'assets'}),false);}}
+ text(c,'今日手牌',18,l.cards.y-27,12,C.muted);text(c,`${view.actionsLeft} / 3 次行动`,402,l.cards.y-27,12,C.mint,true,'right');
+ view.hand.forEach((card,i)=>{const x=18+i*78;const tint=card.type==='info'?C.blue:card.type==='action'?C.gold:C.mint;box(c,x,l.cards.y,72,91,C.panel2,9);text(c,card.rare?'◆ 稀有':card.type==='info'?'信息':card.type==='action'?'操作':'防御',x+8,l.cards.y+10,9,tint);text(c,card.name,x+8,l.cards.y+34,card.name.length===4?12:14,C.text,true);text(c,card.target?'选择个股':'全局效果',x+8,l.cards.y+69,9,C.muted);app.target({x,y:l.cards.y,w:72,h:91,fn:()=>app.open({type:'card',cardId:card.id})});});
+ for(let i=view.hand.length;i<5;i++){box(c,18+i*78,l.cards.y,72,91,'#101c28',9);text(c,'已使用',54+i*78,l.cards.y+39,10,C.line,false,'center');}
+ app.button(view.phase==='decision'?'收盘结算 →':view.phase==='settlement'?'查看今日结算 →':'查看破产复盘 →',l.close.x,l.close.y,l.close.w,l.close.h,()=>app.open({type:view.phase==='decision'?'close':'report'}),true);
+ ['market','info','assets'].forEach((tab,i)=>app.button(['市场','情报','资产'][i],18+i*128,l.nav.y,128,40,()=>{app.tab=tab;app.draw();},false,0,app.tab!==tab));
+}
+module.exports={drawMarket};
+
+},
+"src/platform/browser.js":function(require,module,exports){
+const {createStorage}=require('./storage');
+function createBrowserPlatform(canvas){let pointer=()=>{},resize=()=>{};canvas.addEventListener('wheel',e=>{e.preventDefault();pointer({type:'wheel',deltaY:e.deltaY});},{passive:false});canvas.addEventListener('pointerdown',e=>{canvas.setPointerCapture(e.pointerId);send(e,'down');});canvas.addEventListener('pointermove',e=>send(e,'move'));canvas.addEventListener('pointerup',e=>send(e,'up'));canvas.addEventListener('pointercancel',e=>send(e,'cancel'));function send(e,type){const b=canvas.getBoundingClientRect();pointer({type,x:e.clientX-b.left,y:e.clientY-b.top});}window.addEventListener('resize',()=>resize());const store=key=>createStorage({read:()=>localStorage.getItem(key),write:t=>localStorage.setItem(key,t),clear:()=>localStorage.removeItem(key)});
+ return {canvas,getMetrics:()=>{const b=canvas.getBoundingClientRect();return {width:b.width,height:b.height,dpr:window.devicePixelRatio||1,safeTop:0,safeBottom:0};},onPointer:fn=>pointer=fn,onResize:fn=>resize=fn,storage:store('stock-survival-v1'),records:store('stock-survival-records'),announce:t=>{document.getElementById('status').textContent=t;}};
+}
+module.exports={createBrowserPlatform};
+
+},
+"src/platform/storage.js":function(require,module,exports){
+function createStorage(api){return {read(){try{return {ok:true,value:api.read()||null};}catch(e){return {ok:false,message:'无法读取本地存档'};}},write(text){try{api.write(text);return {ok:true};}catch(e){return {ok:false,message:'本地存档失败，请勿关闭本局'};}},clear(){try{api.clear();return {ok:true};}catch(e){return {ok:false,message:'存档清除失败'};}}};}
+module.exports={createStorage};
+
+}};const cache={};function resolve(id,from){const p=from.split('/');p.pop();for(const v of id.split('/')){if(v==='..')p.pop();else if(v!=='.')p.push(v);}return p.join('/')+(id.endsWith('.js')?'':'.js');}function load(id){if(cache[id])return cache[id].exports;const m={exports:{}};cache[id]=m;modules[id](q=>load(resolve(q,id)),m,m.exports);return m.exports;}load('src/ui/app.js').createApp(load('src/platform/browser.js').createBrowserPlatform(document.getElementById('game')));})();
+</script></body></html>
